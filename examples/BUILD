@@ -19,3 +19,16 @@ pex_pytest(
     deps = [":libfoo"],
     size = "small",
 )
+
+pex_library(
+    name = "pythonroot",
+    srcs = ["pythonroot.py"],
+    # makes it importable with "import pythonroot"
+    pythonroot = ".",
+)
+
+pex_pytest(
+    name = "pythonroot_test",
+    srcs = ["pythonroot_test.py"],
+    deps = [":pythonroot"],
+)

@@ -78,6 +78,39 @@ def _collect_transitive_sources(ctx):
   source_files += pex_file_types.filter(ctx.files.srcs)
   return source_files
 
+def get_pythonroot(ctx):
+  if not (hasattr(ctx.attr, "pythonroot") and ctx.attr.pythonroot != ""):
+    return None
+
+  # split out the /BUILD
+  base = ctx.build_file_path[:ctx.build_file_path.rfind('/')]
+  if ctx.attr.pythonroot == ".":
+    pythonroot = base
+  elif ctx.attr.pythonroot.startswith("/"):
+    maybe_root = ctx.attr.pythonroot[1:]
+    if not (maybe_root.startswith(base) or base.startswith(maybe_root)):
+      fail("absolute pythonroot must be on the package's path: " + maybe_root + " | " + base)
+    pythonroot = maybe_root
+  else:
+    # relative pythonroot
+    if "." in ctx.attr.pythonroot:
+      fail("invalid pythonroot: " + ctx.attr.pythonroot)
+    pythonroot = base + "/" + ctx.attr.pythonroot
+
+  return pythonroot
+
+def _collect_transitive_roots(ctx):
+  transitive_roots = depset(order="postorder")
+  for dep in ctx.attr.deps:
+    # print("collect root", dep.py.transitive_roots)
+    if hasattr(dep.py, "transitive_roots"):
+      transitive_roots += dep.py.transitive_roots
+
+  pythonroot = get_pythonroot(ctx)
+  if pythonroot != None:
+    transitive_roots += depset([pythonroot])
+
+  return transitive_roots
 
 def _collect_transitive_eggs(ctx):
   transitive_eggs = depset(order="postorder")
@@ -115,6 +148,7 @@ def _collect_transitive(ctx):
       transitive_eggs = _collect_transitive_eggs(ctx),
       transitive_reqs = _collect_transitive_reqs(ctx),
       # uses_shared_libraries = ... # native py_library has this. What is it?
+      transitive_roots = _collect_transitive_roots(ctx),
   )
 
 
@@ -149,6 +183,17 @@ def _gen_manifest(py, runfiles):
     dpath = f.short_path
     if dpath.startswith("../"):
       dpath = dpath[3:]
+
+    # match the longest pythonroot, if any
+    longest_prefix = ""
+    for root in py.transitive_roots:
+      prefix = root + "/"
+      # print("checking dpath:" + dpath + " root:" + root + " prefix:" + prefix)
+      if dpath.startswith(prefix):
+        if len(prefix) > len(longest_prefix):
+          longest_prefix = prefix
+    dpath = dpath[len(longest_prefix):]
+
     pex_files.append(
         struct(
             src = f.path,
@@ -202,6 +247,14 @@ def _pex_binary_impl(ctx):
       output = manifest_file,
       content = manifest.to_json(),
   )
+
+  # rewrite the main_pkg if it is part of a pythonroot
+  for root in py.transitive_roots:
+    root = root.replace("/", ".")
+    prefix = root + "."
+    # print("main_pkg:" + main_pkg + " root:" + root + " prefix:" + prefix)
+    if main_pkg.startswith(prefix):
+      main_pkg = main_pkg[len(prefix):]
 
   pexbuilder = ctx.executable._pexbuilder
 
@@ -358,9 +411,13 @@ pex_bin_attrs = _dmerge(pex_attrs, {
     ),
 })
 
+pex_library_attrs = _dmerge(pex_attrs, {
+    "pythonroot": attr.string(),
+})
+
 pex_library = rule(
     _pex_library_impl,
-    attrs = pex_attrs
+    attrs = pex_library_attrs
 )
 
 pex_binary_outputs = {
